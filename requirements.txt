@@ -1,0 +1,9 @@
+streamlit
+langchain-chroma
+langchain-community
+langchain-core
+langchain-openai
+langchain-text-splitters
+chromadb
+pypdf>=4.0.0
+fonttools>=4.0.0
