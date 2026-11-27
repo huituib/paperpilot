@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # 本文件是 PaperPilot（论文阅读助手）的 Streamlit 界面入口。
-# 整体流程：内置示例 PDF -> 解析切块存入向量数据库 -> 选择论文和阅读能力 -> 检索相关片段 -> 大模型生成答案 -> 展示/编辑答案和检索依据。
+# 整体流程：内置示例 PDF -> 解析切块存入向量数据库 -> 选择阅读能力 -> 检索相关片段 -> 大模型生成答案 -> 展示/编辑答案和检索依据。
 
 import hashlib
 import os
@@ -13,7 +13,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# 从核心模块导入通用能力、请求构建、答案生成、PDF 入库、引用检查、公式规范化等函数。
+# 从核心模块导入通用能力、请求构建、答案生成、PDF 索引、引用检查、公式规范化等函数。
 # 真正的业务逻辑集中在 paperpilot_core.py，界面层只负责编排和展示。
 from paperpilot_core import (
     CAPABILITY_OPTIONS,
@@ -29,7 +29,7 @@ from paperpilot_core import (
 
 # 定义项目相关目录，全部基于当前脚本所在位置，避免写死绝对路径。
 PROJECT_DIR = Path(__file__).resolve().parent          # 项目根目录（app.py 所在文件夹）
-DEMO_PDF = PROJECT_DIR / "DeBEIR.pdf"
+DEMO_PDF = PROJECT_DIR / "DeBEIR.pdf"                  # 内置的示例论文 PDF 路径（演示用）
 
 
 # 自定义的本地哈希嵌入类：用哈希算法把文字转成向量，替代真正的语义嵌入模型。
@@ -47,17 +47,23 @@ class LocalHashingEmbeddings(Embeddings):
         return stable_hash_embedding(text)
 
 
+# 构建内置示例论文的内存索引：每个服务器进程只构建一次，之后复用。
+# @st.cache_resource 保证该函数在 Streamlit 反复重跑时不被重复执行。
 @st.cache_resource(show_spinner="正在为示例论文建立索引…")
 def get_demo_index():
     """Build the bundled paper's in-memory index once per server process."""
+    # 用 PDF 文件内容的哈希生成稳定的论文 ID，保证同一文件每次都得到相同 ID。
     paper_id = hashlib.sha256(DEMO_PDF.read_bytes()).hexdigest()[:16]
+    # 创建内存向量数据库（不持久化到磁盘），集合名带上论文 ID 以避免冲突。
     db = Chroma(
         collection_name=f"paperpilot_demo_{paper_id}",
         embedding_function=LocalHashingEmbeddings(),
     )
+    # 把示例 PDF 解析、切块并写入数据库，返回索引信息（页数、片段数等）。
     info = index_pdf_path(
         DEMO_PDF, DEMO_PDF.name, paper_id, db, PyPDFLoader, RecursiveCharacterTextSplitter
     )
+    # 返回数据库对象和论文索引信息，供界面使用。
     return db, info
 
 
@@ -115,14 +121,14 @@ def main():
     # 设置页面标题、图标和布局。
     st.set_page_config(page_title="PaperPilot", page_icon="📄", layout="wide")
     st.title("PaperPilot")
-    # 拿到向量数据库实例。
+    # 构建（或复用）示例论文的向量索引；构建失败则提示并退出。
     try:
         db, paper = get_demo_index()
     except Exception as exc:
         st.error(f"示例论文未能载入：{exc}")
         return
 
-    # 侧边栏：用于输入 API key 和查看示例论文。
+    # 侧边栏：用于输入 API key 和查看示例论文信息。
     with st.sidebar:
         st.header("论文工作区")
         # DeepSeek API key 输入框，保存到会话状态或环境变量。
@@ -135,12 +141,15 @@ def main():
                 st.warning("请输入 API key。")
 
         st.divider()
+        # 展示内置示例论文的标题、作者、许可链接和索引统计信息。
         st.subheader("示例论文")
         st.markdown("[DeBEIR: A Python Package for Dense Bi-Encoder Information Retrieval](https://doi.org/10.21105/joss.05017)")
         st.caption("Vincent Nguyen、Sarvnaz Karimi、Zhenchang Xing（2023） · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)")
         st.caption(f"已索引 {paper.pages} 页，共 {paper.chunks} 个片段。")
 
+    # 使用示例论文的 ID 作为当前选中的论文（本演示版只有这一篇）。
     selected_paper_id = paper.paper_id
+    # 阅读能力多选框，默认勾选「论文摘要生成」。
     selected_capabilities = st.multiselect(
         "论文阅读能力（可多选）", CAPABILITY_OPTIONS,
         default=["论文摘要生成"],
